@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Magnetic Sound Test</title>
+</head>
+
+<body>
+    <h1>テストページ</h1>
+    <script src="./dist/index.umd.js"></script>
+    <script>
+        const soundSystem = new Magnetic.SoundSystem();
+        const soundSource = soundSystem.registerSource(new Magnetic.SoundSourceUrl("./example_sound.mp3"));
+
+        async function init() {
+            await soundSystem.loadAllQueuedSources();
+
+            requestAnimationFrame(onFrame);
+        }
+        function play() {
+            const soundEntry = new Magnetic.SoundEntryPositioned(soundSource, Math.random() * 4 - 2, Math.random() * 4 - 2, Math.random() * 4 - 2);
+
+            soundSystem.play(soundEntry);
+        }
+        function onFrame() {
+            soundSystem.updateTick();
+
+            requestAnimationFrame(onFrame);
+        }
+        init();
+    </script>
+    <button onclick="play()">playbutton</button>
+</body>
+
+</html>

@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES5",
+    "module": "ESNext", // RollupやWebpackが使うのでESNextでOK
+    "declaration": true, // 型定義ファイルを出力
+    "outDir": "dist", // 出力先
+    "downlevelIteration": true,
+    "noImplicitOverride": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "moduleResolution": "node"
+  },
+  "include": [ "src", "rollup.config.js" ]
+}

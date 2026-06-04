@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext", // RollupやWebpackが使うのでESNextでOK
+    "declaration": true, // 型定義ファイルを出力
+    "outDir": "dist", // 出力先
+    "noImplicitOverride": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "moduleResolution": "node"
+  },
+  "include": [ "src", "rollup.config.js" ]
+}
