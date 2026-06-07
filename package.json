@@ -1,6 +1,7 @@
 {
   "name": "magnetic-sound",
   "version": "1.0.3",
+  "type": "module",
   "main": "dist/index.cjs.js",
   "repository": {
     "type": "git",

@@ -133,6 +133,7 @@ export class SoundSystem {
      * @param gain Volume level (0.0 and above).
      */
     public setGroupGain(group: string, gain: number) {
+        this._groupGainMap.set(group, gain);
         for (const soundEntry of this._soundMap.get(group) ?? []) {
             soundEntry.updateBaseGain(gain);
         }
@@ -205,11 +206,6 @@ export class SoundSystem {
         this._isFullyInitedFlag = true;
     }
 
-
-    /**
-     * internal methods. do not call.
-     */
-
     /**
      * a queue to load sound sources.
      * @internal
@@ -226,10 +222,15 @@ export class SoundSystem {
      */
     private _initQueue = new Set<SoundEntry>;
     /**
-     * actived sounds set.
+     * group to sound map.
      * @internal
      */
     private _soundMap = new MultiMap<string, SoundEntry>();
+    /**
+     * group to gain map.
+     * @internal
+     */
+    public _groupGainMap = new Map<string, number>();
 
 
     /**@internal */
@@ -379,6 +380,10 @@ export class SoundEntry {
             this.pauseTime = (performance.now() - this._tryStartedTime) / 1000;
         }
         this.createNodes(soundSystem.context);
+
+        const groupGain = soundSystem._groupGainMap.get(this.options.group ?? DEFAULT_GROUP_NAME) ?? 1;
+        this.updateBaseGain(groupGain);
+
         this.play(soundSystem);
         this._wasInited = true;
     }
@@ -548,7 +553,8 @@ export abstract class AbstractSoundEntryPositioned extends SoundEntry {
             //console.log("wasMutedDueToScreenHide");
         } else {
             if (!this._wasMutedDueToScreenHide) return;
-            if (this.isPlaying) return;
+            this._wasMutedDueToScreenHide = false;
+            if (!this.isPlaying) return;
             this.setMute(false);
             //console.log("wasUnmutedDueToScreenHide");
         }
