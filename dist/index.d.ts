@@ -1,194 +1,145 @@
+/**
+ * The main class that manages the Web Audio API, sound playback, loading, and listener state updates.
+ * It includes automatic resumption of the AudioContext to comply with browser auto-play policies.
+ */
 export declare class SoundSystem {
     tps: number;
     /**
-     * a context of web audio api.
+     * The Web Audio API Context.
      */
     context?: AudioContext;
     /**
-     * @param tps tps to interpolation timings. if you don't use interpolation set 0.
+     * Initializes the SoundSystem.
+     * @param tps Ticks Per Second used for timing interpolation. Set to 0 to disable interpolation.
      */
     constructor(tps?: number);
     /**
-     * load or fetch sources
+     * Loads all registered sound sources and starts decoding them if the context is initialized.
+     * @returns A promise resolving to an array of load results.
      */
     loadAllQueuedSources(): Promise<ArrayBuffer[]>;
     /**
-     * Update the sound system.
-     * @param optionalPartialTicks the partial ticks to callback
+     * Updates the sound system state. This should be called every frame.
+     * Updates the listener's position and cleans up finished sound entries.
+     * @param optionalPartialTicks The progress between ticks for interpolation (0.0 to 1.0).
      * @default 1
-      */
+     */
     updateTick(optionalPartialTicks?: number): void;
     /**
-    * set the listener for the sound system.
-    * @param listener the listener to set for the sound system.
+    * Sets the listener (the point of hearing) for the sound system.
+    * @param listener The entity providing position and orientation.
     */
     setListener(listener: SoundListenerEntity): void;
     /**
-     * set the global gain (volume)
-     * @param gain gain to set
+     * @deprecated
+     * Sets the base volume for all sounds.
+     * @param gain Volume level (0.0 and above).
      */
     setGlobalGain(gain: number): void;
     /**
-     * play sound to the sound system.
-     * @param {SoundEntry} soundEntry sound to play in the sound system.
+     * Sets the base volume for a specific group of sounds.
+     * @param group The name of the group.
+     * @param gain Volume level (0.0 and above).
+     */
+    setGroupGain(group: string, gain: number): void;
+    /**
+     * Adds a sound to the playback queue.
+     * If the AudioContext is not yet active, the sound will be queued for playback once it is initialized.
+     * @param soundEntry The sound entry to play.
      */
     play<T extends SoundEntry>(soundEntry: T): T;
     /**
-     * plays all sounds in the sound system.
-     * @param {number} pauseLevel The level at which the sound can be paused.
+     * Pauses all sounds currently playing in the system.
+     * @param pauseLevel Only sounds with a `pauseLevel` less than or equal to this will be paused.
      * @default Infinity
      */
     pauseAll(pauseLevel?: number): void;
     /**
-     * replays all sounds in the sound system.
+     * Resumes all paused sounds in the system.
      */
     resumeAll(): void;
     /**
-     * Registers the sound source to load.
+     * Registers a sound source to be loaded into the system.
      */
     registerSource<T extends SoundSource>(soundSource: T): T;
     /**
-     * internal methods. do not call.
+     * Activates the AudioContext.
+     * Must be called within a user interaction callback (like a click) to bypass browser auto-play restrictions.
+     * This will also start decoding any queued sources and play any pending sound entries.
      */
-    /**
-     * a queue to load sound sources.
-     * @deprecated internal property
-     */
-    private _loadQueue;
-    /**
-     * a queue to decode sound sources.
-     * @deprecated internal property
-     */
-    private _decodeQueue;
-    /**
-     * a queue to initialization sound entries.
-     * @deprecated internal property
-     */
-    private _initQueue;
-    /**
-     * actived sounds set.
-     * @deprecated internal property
-     */
-    private _sounds;
-    /**@deprecated internal property */
-    private _listener?;
-    /**@deprecated internal property */
-    private _lastEarPos;
-    /**@deprecated internal property */
-    private _lastEarOrient;
-    /**@deprecated internal property */
-    private _globalGain;
-    /**@deprecated internal property */
-    private _wasAllInitedFlag;
-    /**@deprecated internal method */
-    wasInited(): this is SoundSystem & {
-        context: AudioContext;
-    };
-    /**@deprecated internal method */
-    wasAllInited(): this is SoundSystem & {
-        context: AudioContext;
-    };
-    /**@deprecated internal method */
-    getNextTickTime(): number;
-    /**@deprecated internal method */
-    private onclick;
-    /**@deprecated internal method */
-    private getSoundEarPos;
-    /**@deprecated internal method */
-    private getSoundEarOrient;
+    activeContext(): Promise<void>;
 }
+/**
+ * Represents an individual sound instance.
+ * Manages dynamic parameters such as volume, pitch, and looping.
+ *
+ * Node Graph: [SourceNode] -> [gainNode (local volume)] -> [baseGainNode (group/global volume)] -> [Destination]
+ */
 export declare class SoundEntry {
     protected soundSource: SoundSource;
     protected source?: AudioBufferSourceNode;
-    protected globalGainNode: GainNode;
+    /** @deprecated use baseGainNode */
+    protected get globalGainNode(): GainNode;
+    /** @deprecated use baseGainNode */
+    protected set globalGainNode(n: GainNode);
+    protected baseGainNode: GainNode;
     protected gainNode: GainNode;
     protected startTime: number;
     protected pauseTime: number;
     protected readonly pauseLevel: number;
     protected soundSystem: SoundSystem;
     /**
-     * seted true when playing
+     * True if the sound is currently playing.
      */
     isPlaying: boolean;
     /**
-     * seted true when ended;
+     * True if the sound playback has finished.
      */
     wasEnded: boolean;
-    protected options: SoundEntryOptions;
+    options: SoundEntryOptions;
     constructor(soundSource: SoundSource, optionsSrc?: SoundEntryOptions);
     /**
-     * set sound pitch (speed)
-     * @param pitch pitch to set
+     * Sets the playback pitch (speed).
+     * @param pitch Pitch multiplier (1.0 is default).
      */
     setPitch(pitch: number): void;
     /**
-     * set sound gain (volume)
-     * @param gain gain to set
+     * Sets the local volume (gain) for this specific entry.
+     * @param gain Volume level (0.0 is silent).
      */
     setGain(gain: number): void;
     private lastGain;
     /**
-     * mute sound
-     * @param isMute gain to set
-     * @default true
+     * Mutes or unmutes the sound.
+     * @param isMute True to mute.
      */
     setMute(isMute?: boolean): void;
     /**
-     * Creates the audio nodes for the sound entry.
-     * internal method this can be overritten
+     * Creates the necessary audio nodes.
+     * Can be overridden to add custom nodes like filters.
     */
     protected createNodes(audioCtx: AudioContext): void;
     /**
-     * Initializes the audio nodes for the sound entry.
-     * internal method this can be overritten
+     * Connects the created audio nodes.
+     * Can be overridden to change the connection path.
      */
     protected initNodes(audioCtx: AudioContext): void;
-    /**
-     * internal methods. do not call.
-     */
-    /**internal method this can be overritten */
-    init(soundSystem: SoundSystem): void;
-    /**internal method this can be overritten*/
-    updateTick(soundSystem: SoundSystem, optionalPartialTicks: number): void;
-    /**@deprecated internal method */
-    play(soundSystem: SoundSystem): void;
-    /**@deprecated internal method this can be overritten*/
-    canPauseAtLevel(level: number): boolean;
-    /**@deprecated internal method */
-    pause(soundSystem: SoundSystem): void;
-    /**@deprecated internal method */
-    stop(soundSystem: SoundSystem): void;
-    /**@deprecated internal method */
-    updateGlobalGain(gain: number): void;
-    /**
-     * for timing adjustment
-     * @deprecated internal method
-     */
-    _tryStartBeforeClick(): void;
     private _tryStartedTime;
     _wasInited: boolean;
 }
+/**
+ * Abstract class for sound entries that have a 3D position in space.
+ *
+ * Node Graph: [SourceNode] -> [PannerNode] -> [gainNode] -> [baseGainNode] -> [Destination]
+ */
 export declare abstract class AbstractSoundEntryPositioned extends SoundEntry {
     protected pannerNode: PannerNode;
-    /**internal method this can be overritten */
-    updateTick(soundSystem: SoundSystem, optionalPartialTicks: number): void;
-    /**internal method this can be overritten */
-    protected createNodes(audioCtx: AudioContext): void;
-    /**internal method this can be overritten */
-    protected initNodes(audioCtx: AudioContext): void;
     abstract getSoundSourcePos(optionalPartialTicks: number): vec3;
     abstract getSoundSourceOrient(optionalPartialTicks: number): vec3;
-    /**@deprecated internal method */
-    play(soundSystem: SoundSystem): void;
-    /**@deprecated internal method */
-    pause(soundSystem: SoundSystem): void;
-    /**internal method this can be overritten */
-    init(soundSystem: SoundSystem): void;
-    /**@deprecated internal property */
-    private _wasMutedDueToScreenHide;
-    /**@deprecated internal method */
-    _checkScreenHideAndMute(): void;
 }
+/**
+ * A sound entry with a fixed 3D coordinate.
+ */
 export declare class SoundEntryPositioned extends AbstractSoundEntryPositioned {
     protected pos: vec3;
     protected orient: vec3;
@@ -196,12 +147,18 @@ export declare class SoundEntryPositioned extends AbstractSoundEntryPositioned {
     getSoundSourcePos(optionalPartialTicks: number): vec3;
     getSoundSourceOrient(optionalPartialTicks: number): vec3;
 }
+/**
+ * A sound entry that tracks a dynamic entity.
+ */
 export declare class SoundEntryPositionedEntity extends AbstractSoundEntryPositioned {
     protected srcEntity: SoundSourceEntity;
     constructor(src: SoundSource, srcEntity: SoundSourceEntity, options?: SoundEntryOptions);
     getSoundSourcePos(optionalPartialTicks: number): vec3;
     getSoundSourceOrient(optionalPartialTicks: number): vec3;
 }
+/**
+ * Abstract class representing the source of audio data (URL, Base64, Blob, etc.).
+ */
 export declare abstract class SoundSource {
     options?: SoundSourceOptions | undefined;
     protected audioBuffer?: AudioBuffer;
@@ -232,7 +189,6 @@ export declare class SoundSourceUrl extends SoundSource {
      * Loads the sound source.
      * @param context The audio context to decode the sound source.
      * @returns The decoded audio buffer.
-     * @deprecated internal method
      */
     load(): Promise<ArrayBuffer>;
 }
@@ -247,7 +203,6 @@ export declare class SoundSourceBase64 extends SoundSource {
      * Loads the sound source.
      * @param context The audio context to decode the sound source.
      * @returns The decoded audio buffer.
-     * @deprecated internal method
      */
     load(): Promise<ArrayBuffer>;
 }
@@ -262,7 +217,6 @@ export declare class SoundSourceBlob extends SoundSource {
      * Loads the sound source.
      * @param context The audio context to decode the sound source.
      * @returns The decoded audio buffer.
-     * @deprecated internal method
      */
     load(): Promise<ArrayBuffer>;
 }
@@ -282,7 +236,6 @@ export interface SoundEntryOptions extends SoundSourceOptions {
     loop?: boolean;
 }
 export interface SoundSourceOptions {
-    /**@default "HRTF" */
     panningModel?: PanningModelType;
     /**@default "inverse" */
     distanceModel?: DistanceModelType;
@@ -296,10 +249,12 @@ export interface SoundSourceOptions {
     gain?: number;
     /**@default 1 */
     pitch?: number;
+    /**@default "default" */
+    group?: string;
 }
 export interface SoundSystemOptions {
     tps?: number;
     /**@default 0 */
     pauseOnScreenHide?: boolean;
 }
-export { };
+export {};

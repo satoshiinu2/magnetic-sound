@@ -1,4 +1,4 @@
-import { decodeBase64ArrayBuffer, decodeBlobArrayBuffer } from "./util";
+import { decodeBase64ArrayBuffer, decodeBlobArrayBuffer, MultiMap } from "./util";
 
 /** 
  * @example
@@ -22,21 +22,28 @@ import { decodeBase64ArrayBuffer, decodeBlobArrayBuffer } from "./util";
     }
     init();
 */
-console.info("Magnetic Sound was loaded!");
+
+const DEFAULT_GROUP_NAME = "default";
+
+/**
+ * The main class that manages the Web Audio API, sound playback, loading, and listener state updates.
+ * It includes automatic resumption of the AudioContext to comply with browser auto-play policies.
+ */
 export class SoundSystem {
     /**
-     * a context of web audio api.
+     * The Web Audio API Context.
      */
     public context?: AudioContext;
 
     /**
-     * @param tps tps to interpolation timings. if you don't use interpolation set 0.
+     * Initializes the SoundSystem.
+     * @param tps Ticks Per Second used for timing interpolation. Set to 0 to disable interpolation.
      */
     constructor(public tps: number = 0) {
-        document.addEventListener("click", this.onclick.bind(this));
+        document.addEventListener("click", this.activeContext.bind(this));
 
         document.addEventListener('visibilitychange', () => {
-            for (const soundEntry of this._sounds) {
+            for (const soundEntry of this._soundMap.allValues()) {
                 if (soundEntry instanceof AbstractSoundEntryPositioned) {
                     soundEntry._checkScreenHideAndMute();
                 }
@@ -50,14 +57,16 @@ export class SoundSystem {
 
     }
 
+
     /**
-     * load or fetch sources
+     * Loads all registered sound sources and starts decoding them if the context is initialized.
+     * @returns A promise resolving to an array of load results.
      */
     public async loadAllQueuedSources() {
         const promises = Array.from(this._loadQueue).map(async source => {
             const result = await source.load();
 
-            if (this.wasInited()) {
+            if (this._isInited()) {
                 await source.decode(this.context);
             } else {
                 this._decodeQueue.add(source);
@@ -70,15 +79,16 @@ export class SoundSystem {
     }
 
     /**
-     * Update the sound system.
-     * @param optionalPartialTicks the partial ticks to callback
+     * Updates the sound system state. This should be called every frame.
+     * Updates the listener's position and cleans up finished sound entries.
+     * @param optionalPartialTicks The progress between ticks for interpolation (0.0 to 1.0).
      * @default 1
-      */
+     */
     public updateTick(optionalPartialTicks = 1): void {
-        if (!this.wasInited()) return;
-        const pos = this.getSoundEarPos(optionalPartialTicks);
-        const orient = this.getSoundEarOrient(optionalPartialTicks);
-        const time = this.getNextTickTime();
+        if (!this._isInited()) return;
+        const pos = this._getSoundEarPos(optionalPartialTicks);
+        const orient = this._getSoundEarOrient(optionalPartialTicks);
+        const time = this._getNextTickTime();
         if (typeof this.context.listener.positionX !== "undefined") {
             this.context.listener.positionX.setValueAtTime(pos[0], time);
             this.context.listener.positionY.setValueAtTime(pos[1], time);
@@ -90,38 +100,53 @@ export class SoundSystem {
             this.context.listener.setOrientation(pos[0], pos[1], pos[2], orient[0], orient[1], orient[2]);
         }
 
-        for (const soundEntry of this._sounds) {
-            soundEntry.updateTick(this, optionalPartialTicks);
-            if (soundEntry.wasEnded) this._sounds.delete(soundEntry);
+        for (const [group, entries] of this._soundMap) {
+            for (const soundEntry of entries) {
+                soundEntry.updateTick(this, optionalPartialTicks);
+                if (soundEntry.wasEnded) entries.delete(soundEntry);
+            }
+            if (entries.size === 0) this._soundMap.delete(group);
         }
     }
     /**
-    * set the listener for the sound system.
-    * @param listener the listener to set for the sound system.
+    * Sets the listener (the point of hearing) for the sound system.
+    * @param listener The entity providing position and orientation.
     */
     public setListener(listener: SoundListenerEntity) {
         this._listener = listener;
     }
 
     /**
-     * set the global gain (volume)
-     * @param gain gain to set
+     * @deprecated
+     * Sets the base volume for all sounds.
+     * @param gain Volume level (0.0 and above).
      */
     public setGlobalGain(gain: number) {
-        this._globalGain = gain;
-        for (const soundEntry of this._sounds) {
-            soundEntry.updateGlobalGain(gain);
+        for (const soundEntry of this._soundMap.allValues()) {
+            soundEntry.updateBaseGain(gain);
         }
     }
 
     /**
-     * play sound to the sound system.
-     * @param {SoundEntry} soundEntry sound to play in the sound system.
+     * Sets the base volume for a specific group of sounds.
+     * @param group The name of the group.
+     * @param gain Volume level (0.0 and above).
+     */
+    public setGroupGain(group: string, gain: number) {
+        for (const soundEntry of this._soundMap.get(group) ?? []) {
+            soundEntry.updateBaseGain(gain);
+        }
+    }
+
+    /**
+     * Adds a sound to the playback queue.
+     * If the AudioContext is not yet active, the sound will be queued for playback once it is initialized.
+     * @param soundEntry The sound entry to play.
      */
     public play<T extends SoundEntry>(soundEntry: T): T {
-        if (this.wasAllInited()) {
+        if (this._isFullyInited()) {
             soundEntry.init(this);
-            this._sounds.add(soundEntry);
+            this._soundMap.add(soundEntry.options.group ?? DEFAULT_GROUP_NAME, soundEntry);
         } else {
             soundEntry._tryStartBeforeClick();
             this._initQueue.add(soundEntry);
@@ -130,92 +155,38 @@ export class SoundSystem {
     }
 
     /**
-     * plays all sounds in the sound system.
-     * @param {number} pauseLevel The level at which the sound can be paused.
+     * Pauses all sounds currently playing in the system.
+     * @param pauseLevel Only sounds with a `pauseLevel` less than or equal to this will be paused.
      * @default Infinity
      */
     public pauseAll(pauseLevel: number = Infinity) {
-        for (const soundEntry of this._sounds) {
+        for (const soundEntry of this._soundMap.allValues()) {
             if (!soundEntry.canPauseAtLevel(pauseLevel)) continue;
             soundEntry.pause(this);
         }
     }
     /**
-     * replays all sounds in the sound system.
+     * Resumes all paused sounds in the system.
      */
     public resumeAll() {
-        for (const soundEntry of this._sounds) {
+        for (const soundEntry of this._soundMap.allValues()) {
             soundEntry.play(this);
         }
     }
     /**
-     * Registers the sound source to load.
+     * Registers a sound source to be loaded into the system.
      */
     public registerSource<T extends SoundSource>(soundSource: T): T {
         this._loadQueue.add(soundSource);
         return soundSource;
     }
 
-
     /**
-     * internal methods. do not call.
+     * Activates the AudioContext.
+     * Must be called within a user interaction callback (like a click) to bypass browser auto-play restrictions.
+     * This will also start decoding any queued sources and play any pending sound entries.
      */
-
-    /**
-     * a queue to load sound sources.
-     * @deprecated internal property
-     */
-    private _loadQueue = new Set<SoundSource>;
-    /**
-     * a queue to decode sound sources.
-     * @deprecated internal property
-     */
-    private _decodeQueue = new Set<SoundSource>;
-    /**
-     * a queue to initialization sound entries.
-     * @deprecated internal property
-     */
-    private _initQueue = new Set<SoundEntry>;
-    /**
-     * actived sounds set.
-     * @deprecated internal property
-     */
-    private _sounds = new Set<SoundEntry>;
-
-
-    /**@deprecated internal property */
-    private _listener?: SoundListenerEntity;
-
-    /**@deprecated internal property */
-    private _lastEarPos = [0, 0, 0];
-
-    /**@deprecated internal property */
-    private _lastEarOrient = [0, 1, 0];
-
-    /**@deprecated internal property */
-    private _globalGain = 1.0;
-
-    /**@deprecated internal property */
-    private _wasAllInitedFlag = false;
-
-    /**@deprecated internal method */
-    public wasInited(): this is SoundSystem & { context: AudioContext } {
-        return this.context != null;
-    }
-
-    /**@deprecated internal method */
-    public wasAllInited(): this is SoundSystem & { context: AudioContext } {
-        return this._wasAllInitedFlag && this.context != null;
-    }
-
-    /**@deprecated internal method */
-    public getNextTickTime(): number {
-        if (!this.wasInited()) return 0;
-        return this.context.currentTime + this.tps / 1000;
-    }
-
-    /**@deprecated internal method */
-    private async onclick() {
+    public async activeContext() {
         if (this.context != null) return;
         this.context = new AudioContext();
         await this.context.resume();
@@ -228,22 +199,77 @@ export class SoundSystem {
         for (const soundEntry of this._initQueue) {
             if (soundEntry._wasInited) continue;
             soundEntry.init(this);
-            this._sounds.add(soundEntry);
+            this._soundMap.add(soundEntry.options.group ?? DEFAULT_GROUP_NAME, soundEntry);
         }
         this._initQueue.clear();
-        this._wasAllInitedFlag = true;
+        this._isFullyInitedFlag = true;
     }
 
-    /**@deprecated internal method */
-    private getSoundEarPos(optionalPartialTicks: number) {
+
+    /**
+     * internal methods. do not call.
+     */
+
+    /**
+     * a queue to load sound sources.
+     * @internal
+     */
+    private _loadQueue = new Set<SoundSource>;
+    /**
+     * a queue to decode sound sources.
+     * @internal
+     */
+    private _decodeQueue = new Set<SoundSource>;
+    /**
+     * a queue to initialization sound entries.
+     * @internal
+     */
+    private _initQueue = new Set<SoundEntry>;
+    /**
+     * actived sounds set.
+     * @internal
+     */
+    private _soundMap = new MultiMap<string, SoundEntry>();
+
+
+    /**@internal */
+    private _listener?: SoundListenerEntity;
+
+    /**@internal */
+    private _lastEarPos = [0, 0, 0];
+
+    /**@internal */
+    private _lastEarOrient = [0, 1, 0];
+
+    /**@internal */
+    private _isFullyInitedFlag = false;
+
+    /**@internal */
+    public _isInited(): this is SoundSystem & { context: AudioContext } {
+        return this.context != null;
+    }
+
+    /**@internal */
+    public _isFullyInited(): this is SoundSystem & { context: AudioContext } {
+        return this._isFullyInitedFlag && this.context != null;
+    }
+
+    /**@internal */
+    public _getNextTickTime(): number {
+        if (!this._isInited()) return 0;
+        return this.context.currentTime + this.tps / 1000;
+    }
+
+    /**@internal */
+    private _getSoundEarPos(optionalPartialTicks: number) {
         if (this._listener == null) return this._lastEarPos;
         const earPos = this._listener.getSoundEarPos(optionalPartialTicks);
         if (earPos.some(n => !isFinite(n))) return this._lastEarPos;
         return this._lastEarPos = earPos;
     }
 
-    /**@deprecated internal method */
-    private getSoundEarOrient(optionalPartialTicks: number) {
+    /**@internal */
+    private _getSoundEarOrient(optionalPartialTicks: number) {
         if (this._listener == null) return this._lastEarOrient;
         const earOrient = this._listener.getSoundEarOrient(optionalPartialTicks);
         if (earOrient.some(n => !isFinite(n))) return this._lastEarOrient;
@@ -251,84 +277,103 @@ export class SoundSystem {
     }
 }
 
+/**
+ * Represents an individual sound instance.
+ * Manages dynamic parameters such as volume, pitch, and looping.
+ * 
+ * Node Graph: [SourceNode] -> [gainNode (local volume)] -> [baseGainNode (group/global volume)] -> [Destination]
+ */
 export class SoundEntry {
     protected source?: AudioBufferSourceNode;
-    protected globalGainNode!: GainNode;
+
+    /** @deprecated use baseGainNode */
+    protected get globalGainNode() {
+        return this.baseGainNode;
+    }
+
+    /** @deprecated use baseGainNode */
+    protected set globalGainNode(n: GainNode) {
+        this.baseGainNode = n;
+    }
+
+    protected baseGainNode!: GainNode;
     protected gainNode!: GainNode;
     protected startTime = 0;
     protected pauseTime = 0;
     protected readonly pauseLevel: number;
     protected soundSystem!: SoundSystem;
     /**
-     * seted true when playing 
+     * True if the sound is currently playing.
      */
     public isPlaying = false;
     /**
-     * seted true when ended;
+     * True if the sound playback has finished.
      */
     public wasEnded = false;
-    protected options: SoundEntryOptions
+    public options: SoundEntryOptions
     constructor(protected soundSource: SoundSource, optionsSrc?: SoundEntryOptions) {
         this.options = Object.assign(structuredClone(soundSource.options) ?? {}, optionsSrc);
         this.pauseLevel = this.options?.pauseLevel ?? 1;
     }
 
     /**
-     * set sound pitch (speed)
-     * @param pitch pitch to set
+     * Sets the playback pitch (speed).
+     * @param pitch Pitch multiplier (1.0 is default).
      */
     setPitch(pitch: number) {
-        const time = this.soundSystem.getNextTickTime();
+        const time = this.soundSystem._getNextTickTime();
         this.source?.playbackRate.setValueAtTime(pitch, time);
     }
     /**
-     * set sound gain (volume)
-     * @param gain gain to set
+     * Sets the local volume (gain) for this specific entry.
+     * @param gain Volume level (0.0 is silent).
      */
     setGain(gain: number) {
-        const time = this.soundSystem.getNextTickTime();
+        const time = this.soundSystem._getNextTickTime();
         this.gainNode.gain.setTargetAtTime(gain, time, 0.01);
         this.lastGain = gain;
     }
     private lastGain = 1;
 
     /**
-     * mute sound
-     * @param isMute gain to set
-     * @default true
+     * Mutes or unmutes the sound.
+     * @param isMute True to mute.
      */
     setMute(isMute: boolean = true) {
-        const time = this.soundSystem.getNextTickTime();
+        const time = this.soundSystem._getNextTickTime();
         const gain = isMute ? 0 : this.lastGain;
         this.gainNode.gain.setTargetAtTime(gain, time, 0.01);
     }
 
     /**
-     * Creates the audio nodes for the sound entry.
-     * internal method this can be overritten 
+     * Creates the necessary audio nodes.
+     * Can be overridden to add custom nodes like filters.
     */
     protected createNodes(audioCtx: AudioContext) {
         this.gainNode = audioCtx.createGain();
-        this.globalGainNode = audioCtx.createGain();
+        this.baseGainNode = audioCtx.createGain();
     }
 
     /**
-     * Initializes the audio nodes for the sound entry.
-     * internal method this can be overritten 
+     * Connects the created audio nodes.
+     * Can be overridden to change the connection path.
      */
     protected initNodes(audioCtx: AudioContext) {
         this.source?.connect(this.gainNode);
-        this.gainNode?.connect(this.globalGainNode);
-        this.globalGainNode.connect(audioCtx.destination);
+        this.gainNode?.connect(this.baseGainNode);
+        this.baseGainNode.connect(audioCtx.destination);
     }
 
     /**
      * internal methods. do not call.
      */
-    /**internal method this can be overritten */
+    /**
+     * Initializes the entry and starts playback.
+     * @internal
+     */
     init(soundSystem: SoundSystem) {
         this.soundSystem = soundSystem;
-        if (!soundSystem.wasInited()) throw new Error("soundSystem is not initializationed");
+        if (!soundSystem._isInited()) throw new Error("soundSystem is not initializationed");
 
         if (this._tryStartedTime) {
             this.pauseTime = (performance.now() - this._tryStartedTime) / 1000;
@@ -338,12 +383,15 @@ export class SoundEntry {
         this._wasInited = true;
     }
 
-    /**internal method this can be overritten*/
+    /**
+     * Per-tick update logic.
+     * @internal
+     */
     updateTick(soundSystem: SoundSystem, optionalPartialTicks: number) {
 
     }
 
-    /**@deprecated internal method */
+    /**@internal */
     play(soundSystem: SoundSystem) {
         if (this.isPlaying) return;
         const audioCtx = soundSystem.context;
@@ -377,12 +425,12 @@ export class SoundEntry {
         this.setPitch(this.options?.pitch ?? 1);
     }
 
-    /**@deprecated internal method this can be overritten*/
+    /**@internal this can be overritten*/
     canPauseAtLevel(level: number) {
         return level >= this.pauseLevel;
     }
 
-    /**@deprecated internal method */
+    /**@internal */
     pause(soundSystem: SoundSystem) {
         if (!this.isPlaying) return;
         const audioCtx = soundSystem.context;
@@ -393,7 +441,7 @@ export class SoundEntry {
         this.isPlaying = false;
     }
 
-    /**@deprecated internal method */
+    /**@internal */
     stop(soundSystem: SoundSystem) {
         if (!this.isPlaying) return;
 
@@ -402,16 +450,20 @@ export class SoundEntry {
         this.isPlaying = false;
     }
 
-    /**@deprecated internal method */
-    updateGlobalGain(gain: number) {
-        const time = this.soundSystem.getNextTickTime();
-        this.globalGainNode.gain.setValueAtTime(gain, time);
+    /**
+     * Called when global or group gain changes.
+     * @internal
+     */
+    updateBaseGain(gain: number) {
+        const time = this.soundSystem._getNextTickTime();
+        this.baseGainNode.gain.setValueAtTime(gain, time);
     }
 
 
     /**
-     * for timing adjustment
-     * @deprecated internal method
+     * Records the attempt time to play a sound before AudioContext is active.
+     * Used to sync playback start point once initialized.
+     * @internal
      */
     _tryStartBeforeClick() {
         this._tryStartedTime = performance.now();
@@ -420,17 +472,22 @@ export class SoundEntry {
     _wasInited = false;
 }
 
+/**
+ * Abstract class for sound entries that have a 3D position in space.
+ * 
+ * Node Graph: [SourceNode] -> [PannerNode] -> [gainNode] -> [baseGainNode] -> [Destination]
+ */
 export abstract class AbstractSoundEntryPositioned extends SoundEntry {
     protected pannerNode!: PannerNode;
 
-    /**internal method this can be overritten */
+    /** @internal */
     override updateTick(soundSystem: SoundSystem, optionalPartialTicks: number): void {
-        if (!soundSystem.wasInited()) return;
+        if (!soundSystem._isInited()) return;
 
         super.updateTick(soundSystem, optionalPartialTicks);
         const pos = this.getSoundSourcePos(optionalPartialTicks);
         const orient = this.getSoundSourceOrient(optionalPartialTicks);
-        const time = soundSystem.getNextTickTime();
+        const time = soundSystem._getNextTickTime();
         this.pannerNode.positionX.setValueAtTime(pos[0], time);
         this.pannerNode.positionY.setValueAtTime(pos[1], time);
         this.pannerNode.positionZ.setValueAtTime(pos[2], time);
@@ -438,7 +495,7 @@ export abstract class AbstractSoundEntryPositioned extends SoundEntry {
         this.pannerNode.orientationY.setValueAtTime(orient[1], time);
         this.pannerNode.orientationZ.setValueAtTime(orient[2], time);
     }
-    /**internal method this can be overritten */
+    /** @internal */
     protected override createNodes(audioCtx: AudioContext): void {
         this.pannerNode = audioCtx.createPanner();
 
@@ -450,35 +507,39 @@ export abstract class AbstractSoundEntryPositioned extends SoundEntry {
         this.pannerNode.rolloffFactor = this.soundSource.options?.rolloffFactor ?? 1;
         super.createNodes(audioCtx);
     }
-    /**internal method this can be overritten */
+    /** @internal */
     protected override initNodes(audioCtx: AudioContext): void {
         this.source?.connect(this.pannerNode);
         this.pannerNode.connect(this.gainNode);
-        this.gainNode.connect(this.globalGainNode);
-        this.globalGainNode.connect(audioCtx.destination);
+        this.gainNode.connect(this.baseGainNode);
+        this.baseGainNode.connect(audioCtx.destination);
     }
     abstract getSoundSourcePos(optionalPartialTicks: number): vec3;
     abstract getSoundSourceOrient(optionalPartialTicks: number): vec3;
 
-    /**@deprecated internal method */
+    /**@internal */
     override play(soundSystem: SoundSystem): void {
         this._wasMutedDueToScreenHide = false;
         super.play(soundSystem);
     }
-    /**@deprecated internal method */
+    /**@internal */
     override pause(soundSystem: SoundSystem): void {
         this._wasMutedDueToScreenHide = false;
         super.pause(soundSystem);
     }
-    /**internal method this can be overritten */
+    /** @internal */
     override init(soundSystem: SoundSystem): void {
         super.init(soundSystem);
         this._checkScreenHideAndMute();
     }
 
-    /**@deprecated internal property */
+    /**@internal */
     private _wasMutedDueToScreenHide = false;
-    /**@deprecated internal method */
+    /**
+     * Mutes sounds when the browser tab is hidden to save resources or match user expectation.
+     * @internal
+     */
+    /**@internal */
     _checkScreenHideAndMute() {
         if (document.hidden) {
             if (!this.isPlaying) return;
@@ -494,6 +555,9 @@ export abstract class AbstractSoundEntryPositioned extends SoundEntry {
     }
 }
 
+/**
+ * A sound entry with a fixed 3D coordinate.
+ */
 export class SoundEntryPositioned extends AbstractSoundEntryPositioned {
     protected pos: vec3;
     protected orient: vec3;
@@ -510,6 +574,9 @@ export class SoundEntryPositioned extends AbstractSoundEntryPositioned {
     }
 }
 
+/**
+ * A sound entry that tracks a dynamic entity.
+ */
 export class SoundEntryPositionedEntity extends AbstractSoundEntryPositioned {
     constructor(src: SoundSource, protected srcEntity: SoundSourceEntity, options?: SoundEntryOptions) {
         super(src, options);
@@ -522,6 +589,9 @@ export class SoundEntryPositionedEntity extends AbstractSoundEntryPositioned {
     }
 }
 
+/**
+ * Abstract class representing the source of audio data (URL, Base64, Blob, etc.).
+ */
 export abstract class SoundSource {
     protected audioBuffer?: AudioBuffer;
     protected arrayBuffer?: ArrayBuffer;
@@ -564,7 +634,6 @@ export class SoundSourceUrl extends SoundSource {
      * Loads the sound source.
      * @param context The audio context to decode the sound source.
      * @returns The decoded audio buffer.
-     * @deprecated internal method
      */
     async load(): Promise<ArrayBuffer> {
         const response = await fetch(this.src);
@@ -582,7 +651,6 @@ export class SoundSourceBase64 extends SoundSource {
      * Loads the sound source.
      * @param context The audio context to decode the sound source.
      * @returns The decoded audio buffer.
-     * @deprecated internal method
      */
     async load(): Promise<ArrayBuffer> {
         return this.arrayBuffer = decodeBase64ArrayBuffer(this.src);
@@ -600,7 +668,6 @@ export class SoundSourceBlob extends SoundSource {
      * Loads the sound source.
      * @param context The audio context to decode the sound source.
      * @returns The decoded audio buffer.
-     * @deprecated internal method
      */
     async load(): Promise<ArrayBuffer> {
         return this.arrayBuffer = await decodeBlobArrayBuffer(this.src);
@@ -639,6 +706,8 @@ export interface SoundSourceOptions {
     gain?: number;
     /**@default 1 */
     pitch?: number;
+    /**@default "default" */
+    group?: string;
 }
 
 

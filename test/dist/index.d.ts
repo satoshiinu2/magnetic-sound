@@ -1,47 +1,9 @@
-/**
- * @example
-    const soundSystem = new Magnetic.SoundSystem();
-    const soundSource = soundSystem.registerSource(new Magnetic.SoundSourceUrl("./example_sound.mp3"));
-
-    async function init() {
-        await soundSystem.loadAllQueuedSources();
-
-        requestAnimationFrame(onFrame);
-    }
-    function play() {
-        const soundEntry = new Magnetic.SoundEntryPositioned(soundSource, 1, 2, 3, 0, 1, 0);
-
-        soundSystem.play(soundEntry);
-    }
-    function onFrame() {
-        soundSystem.updateTick();
-
-        requestAnimationFrame(onFrame);
-    }
-    init();
-*/
 export declare class SoundSystem {
     tps: number;
     /**
-     * a queue to load sound sources.
+     * a context of web audio api.
      */
-    private loadQueue;
-    /**
-     * a queue to decode sound sources.
-     */
-    private decodeQueue;
-    /**
-     * a queue to initialization sound entries.
-     */
-    private initQueue;
-    /**
-     * actived sounds set.
-     */
-    private sounds;
     context?: AudioContext;
-    private listener?;
-    private lastEarPos;
-    private lastEarOrient;
     /**
      * @param tps tps to interpolation timings. if you don't use interpolation set 0.
      */
@@ -52,26 +14,34 @@ export declare class SoundSystem {
     loadAllQueuedSources(): Promise<ArrayBuffer[]>;
     /**
      * Update the sound system.
-     * @param optionalPartialTicks the partial ticks to use for callback
+     * @param optionalPartialTicks the partial ticks to callback
      * @default 1
       */
     updateTick(optionalPartialTicks?: number): void;
-    getNextTickTime(): number;
-    private getSoundEarPos;
-    private getSoundEarOrient;
     /**
     * set the listener for the sound system.
     * @param listener the listener to set for the sound system.
     */
     setListener(listener: SoundListenerEntity): void;
     /**
-     * play sound to the sound system.
-     * @param soundEntry sound to play in the sound system.
+     * @deprecated
+     * set the global gain (volume)
+     * @param gain gain to set
      */
-    play(soundEntry: SoundEntry): void;
+    setGlobalGain(gain: number): void;
+    /**
+     * set the global gain (volume)
+     * @param gain gain to set
+     */
+    setGroupGain(group: string, gain: number): void;
+    /**
+     * play sound to the sound system.
+     * @param {SoundEntry} soundEntry sound to play in the sound system.
+     */
+    play<T extends SoundEntry>(soundEntry: T): T;
     /**
      * plays all sounds in the sound system.
-     * @param pauseLevel The level at which the sound can be paused.
+     * @param {number} pauseLevel The level at which the sound can be paused.
      * @default Infinity
      */
     pauseAll(pauseLevel?: number): void;
@@ -83,15 +53,15 @@ export declare class SoundSystem {
      * Registers the sound source to load.
      */
     registerSource<T extends SoundSource>(soundSource: T): T;
-    wasInited(): this is SoundSystem & {
-        context: AudioContext;
-    };
-    private onclick;
 }
 export declare class SoundEntry {
     protected soundSource: SoundSource;
-    protected options?: SoundEntryOptions | undefined;
     protected source?: AudioBufferSourceNode;
+    /** @deprecated use baseGainNode */
+    protected get globalGainNode(): GainNode;
+    /** @deprecated use baseGainNode */
+    protected set globalGainNode(n: GainNode);
+    protected baseGainNode: GainNode;
     protected gainNode: GainNode;
     protected startTime: number;
     protected pauseTime: number;
@@ -105,7 +75,8 @@ export declare class SoundEntry {
      * seted true when ended;
      */
     wasEnded: boolean;
-    constructor(soundSource: SoundSource, options?: SoundEntryOptions | undefined);
+    options: SoundEntryOptions;
+    constructor(soundSource: SoundSource, optionsSrc?: SoundEntryOptions);
     /**
      * set sound pitch (speed)
      * @param pitch pitch to set
@@ -116,45 +87,45 @@ export declare class SoundEntry {
      * @param gain gain to set
      */
     setGain(gain: number): void;
+    private lastGain;
+    /**
+     * mute sound
+     * @param isMute gain to set
+     * @default true
+     */
+    setMute(isMute?: boolean): void;
     /**
      * Creates the audio nodes for the sound entry.
-     */
+     * internal method this can be overritten
+    */
     protected createNodes(audioCtx: AudioContext): void;
     /**
      * Initializes the audio nodes for the sound entry.
+     * internal method this can be overritten
      */
     protected initNodes(audioCtx: AudioContext): void;
     /**
      * internal methods. do not call.
      */
-    /**@deprecated internal method */
+    /**internal method this can be overritten */
     init(soundSystem: SoundSystem): void;
-    /**
-     * for timing adjustment
-     * @deprecated internal method
-     */
-    tryStartBeforeClick(): void;
-    private tryStartedTime;
-    wasInited: boolean;
-    /**@deprecated internal method */
+    /**internal method this can be overritten*/
     updateTick(soundSystem: SoundSystem, optionalPartialTicks: number): void;
-    /**@deprecated internal method */
-    play(soundSystem: SoundSystem): void;
-    /**@deprecated internal method */
-    canPauseAtLevel(level: number): boolean;
-    /**@deprecated internal method */
-    pause(soundSystem: SoundSystem): void;
-    /**@deprecated internal method */
-    stop(soundSystem: SoundSystem): void;
+    private _tryStartedTime;
+    _wasInited: boolean;
 }
 export declare abstract class AbstractSoundEntryPositioned extends SoundEntry {
     protected pannerNode: PannerNode;
-    /**@deprecated internal method */
+    /**internal method this can be overritten */
     updateTick(soundSystem: SoundSystem, optionalPartialTicks: number): void;
+    /**internal method this can be overritten */
     protected createNodes(audioCtx: AudioContext): void;
+    /**internal method this can be overritten */
     protected initNodes(audioCtx: AudioContext): void;
     abstract getSoundSourcePos(optionalPartialTicks: number): vec3;
     abstract getSoundSourceOrient(optionalPartialTicks: number): vec3;
+    /**internal method this can be overritten */
+    init(soundSystem: SoundSystem): void;
 }
 export declare class SoundEntryPositioned extends AbstractSoundEntryPositioned {
     protected pos: vec3;
@@ -195,13 +166,6 @@ export declare class SoundSourceUrl extends SoundSource {
      * @param src The audio source.
      */
     constructor(src: string, options?: SoundSourceOptions);
-    /**
-     * Loads the sound source.
-     * @param context The audio context to decode the sound source.
-     * @returns The decoded audio buffer.
-     * @deprecated internal method
-     */
-    load(): Promise<ArrayBuffer>;
 }
 export declare class SoundSourceBase64 extends SoundSource {
     private src;
@@ -210,13 +174,6 @@ export declare class SoundSourceBase64 extends SoundSource {
      * @param src The audio source.
      */
     constructor(src: string, options?: SoundSourceOptions);
-    /**
-     * Loads the sound source.
-     * @param context The audio context to decode the sound source.
-     * @returns The decoded audio buffer.
-     * @deprecated internal method
-     */
-    load(): Promise<ArrayBuffer>;
 }
 export declare class SoundSourceBlob extends SoundSource {
     private src;
@@ -225,13 +182,6 @@ export declare class SoundSourceBlob extends SoundSource {
      * @param src The audio source.
      */
     constructor(src: Blob, options?: SoundSourceOptions);
-    /**
-     * Loads the sound source.
-     * @param context The audio context to decode the sound source.
-     * @returns The decoded audio buffer.
-     * @deprecated internal method
-     */
-    load(): Promise<ArrayBuffer>;
 }
 type vec3 = [number, number, number];
 export interface SoundSourceEntity {
@@ -242,7 +192,7 @@ export interface SoundListenerEntity {
     getSoundEarPos(optionalPartialTicks: number): vec3;
     getSoundEarOrient(optionalPartialTicks: number): vec3;
 }
-export interface SoundEntryOptions {
+export interface SoundEntryOptions extends SoundSourceOptions {
     /**@default 1 */
     pauseLevel?: number;
     /**@default false */
@@ -258,5 +208,16 @@ export interface SoundSourceOptions {
     maxDistance?: number;
     /**@default 1 */
     rolloffFactor?: number;
+    /**@default 1 */
+    gain?: number;
+    /**@default 1 */
+    pitch?: number;
+    /**@default "default" */
+    group?: string;
 }
-export { };
+export interface SoundSystemOptions {
+    tps?: number;
+    /**@default 0 */
+    pauseOnScreenHide?: boolean;
+}
+export {};
