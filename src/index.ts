@@ -62,8 +62,10 @@ export class SoundSystem {
      * Loads all registered sound sources and starts decoding them if the context is initialized.
      * @returns A promise resolving to an array of load results.
      */
-    public async loadAllQueuedSources() {
-        const promises = Array.from(this._loadQueue).map(async source => {
+    public async loadAllQueuedSources(): Promise<any[]> {
+        const sources = Array.from(this._loadQueue);
+        this._loadQueue.clear();
+        const promises = sources.map(async source => {
             const result = await source.load();
 
             if (this._isInited()) {
@@ -72,7 +74,6 @@ export class SoundSystem {
                 this._decodeQueue.add(source);
             }
 
-            this._loadQueue.delete(source);
             return result;
         });
         return await Promise.all(promises);
@@ -89,15 +90,18 @@ export class SoundSystem {
         const pos = this._getSoundEarPos(optionalPartialTicks);
         const orient = this._getSoundEarOrient(optionalPartialTicks);
         const time = this._getNextTickTime();
-        if (typeof this.context.listener.positionX !== "undefined") {
-            this.context.listener.positionX.setValueAtTime(pos[0], time);
-            this.context.listener.positionY.setValueAtTime(pos[1], time);
-            this.context.listener.positionZ.setValueAtTime(pos[2], time);
-            this.context.listener.forwardX.setValueAtTime(orient[0], time);
-            this.context.listener.forwardY.setValueAtTime(orient[1], time);
-            this.context.listener.forwardZ.setValueAtTime(orient[2], time);
+        const listener = this.context.listener;
+        if (listener.positionX) {
+            listener.positionX.setValueAtTime(pos[0], time);
+            listener.positionY.setValueAtTime(pos[1], time);
+            listener.positionZ.setValueAtTime(pos[2], time);
+            listener.forwardX.setValueAtTime(orient[0], time);
+            listener.forwardY.setValueAtTime(orient[1], time);
+            listener.forwardZ.setValueAtTime(orient[2], time);
         } else {
-            this.context.listener.setOrientation(pos[0], pos[1], pos[2], orient[0], orient[1], orient[2]);
+            listener.setPosition(pos[0], pos[1], pos[2]);
+            // orientationは forward(x,y,z) と up(x,y,z) の6引数が必要
+            listener.setOrientation(orient[0], orient[1], orient[2], 0, 1, 0);
         }
 
         for (const [group, entries] of this._soundMap) {
@@ -329,21 +333,28 @@ export class SoundEntry {
      * Sets the local volume (gain) for this specific entry.
      * @param gain Volume level (0.0 is silent).
      */
-    setGain(gain: number) {
-        const time = this.soundSystem._getNextTickTime();
-        this.gainNode.gain.setTargetAtTime(gain, time, 0.01);
+    setGain(gain: number): void {
         this.lastGain = gain;
+        this._updateActualGain();
     }
+
+    private _updateActualGain(): void {
+        if (!this.gainNode) return;
+        const time = this.soundSystem._getNextTickTime();
+        const targetGain = this._isMuted ? 0 : this.lastGain;
+        this.gainNode.gain.setTargetAtTime(targetGain, time, 0.01);
+    }
+
     private lastGain = 1;
+    private _isMuted = false;
 
     /**
      * Mutes or unmutes the sound.
      * @param isMute True to mute.
      */
-    setMute(isMute: boolean = true) {
-        const time = this.soundSystem._getNextTickTime();
-        const gain = isMute ? 0 : this.lastGain;
-        this.gainNode.gain.setTargetAtTime(gain, time, 0.01);
+    setMute(isMute: boolean = true): void {
+        this._isMuted = isMute;
+        this._updateActualGain();
     }
 
     /**
@@ -410,21 +421,23 @@ export class SoundEntry {
         this.initNodes(audioCtx);
 
         this.startTime = audioCtx.currentTime - this.pauseTime;
+        this.isPlaying = true;
+        this.wasEnded = false;
 
         if (this.pauseTime > 0) {
             this.source.start(0, this.pauseTime);
         } else {
             this.source.start();
         }
-        this.isPlaying = true;
-        this.wasEnded = false;
 
         this.source.onended = () => {
-            this.isPlaying = false;
-            this.pauseTime = 0;
-            this.wasEnded = true;
-        }
-
+            // pause() によって停止された場合は isPlaying が false になっている
+            if (this.isPlaying) {
+                this.isPlaying = false;
+                this.pauseTime = 0;
+                this.wasEnded = true;
+            }
+        };
 
         this.setGain(this.options?.gain ?? 1);
         this.setPitch(this.options?.pitch ?? 1);
@@ -453,6 +466,7 @@ export class SoundEntry {
         this.source?.stop();
         this.pauseTime = 0;
         this.isPlaying = false;
+        this.wasEnded = true;
     }
 
     /**
@@ -493,12 +507,17 @@ export abstract class AbstractSoundEntryPositioned extends SoundEntry {
         const pos = this.getSoundSourcePos(optionalPartialTicks);
         const orient = this.getSoundSourceOrient(optionalPartialTicks);
         const time = soundSystem._getNextTickTime();
-        this.pannerNode.positionX.setValueAtTime(pos[0], time);
-        this.pannerNode.positionY.setValueAtTime(pos[1], time);
-        this.pannerNode.positionZ.setValueAtTime(pos[2], time);
-        this.pannerNode.orientationX.setValueAtTime(orient[0], time);
-        this.pannerNode.orientationY.setValueAtTime(orient[1], time);
-        this.pannerNode.orientationZ.setValueAtTime(orient[2], time);
+        if (this.pannerNode.positionX) {
+            this.pannerNode.positionX.setValueAtTime(pos[0], time);
+            this.pannerNode.positionY.setValueAtTime(pos[1], time);
+            this.pannerNode.positionZ.setValueAtTime(pos[2], time);
+            this.pannerNode.orientationX.setValueAtTime(orient[0], time);
+            this.pannerNode.orientationY.setValueAtTime(orient[1], time);
+            this.pannerNode.orientationZ.setValueAtTime(orient[2], time);
+        } else {
+            this.pannerNode.setPosition(pos[0], pos[1], pos[2]);
+            this.pannerNode.setOrientation(orient[0], orient[1], orient[2]);
+        }
     }
     /** @internal */
     protected override createNodes(audioCtx: AudioContext): void {
@@ -567,10 +586,10 @@ export abstract class AbstractSoundEntryPositioned extends SoundEntry {
 export class SoundEntryPositioned extends AbstractSoundEntryPositioned {
     protected pos: vec3;
     protected orient: vec3;
-    constructor(src: SoundSource, x: number, y: number, z: number, xUp: number = 0, yUp: number = 0, zUp: number = 0, options?: SoundEntryOptions) {
+    constructor(src: SoundSource, x: number, y: number, z: number, orientX: number = 0, orientY: number = 0, orientZ: number = 0, options?: SoundEntryOptions) {
         super(src, options);
         this.pos = [x, y, z];
-        this.orient = [xUp, yUp, zUp];
+        this.orient = [orientX, orientY, orientZ];
     }
     override getSoundSourcePos(optionalPartialTicks: number): vec3 {
         return this.pos;
@@ -613,10 +632,13 @@ export abstract class SoundSource {
     * @returns The decoded audio buffer.
     */
     async decode(context: AudioContext): Promise<AudioBuffer> {
+        if (this.audioBuffer) return this.audioBuffer;
         if (this.arrayBuffer == null) {
             throw new Error("Array Buffer not loaded. Call load() first.");
         }
-        return this.audioBuffer = await context.decodeAudioData(this.arrayBuffer);
+        const buffer = await context.decodeAudioData(this.arrayBuffer);
+        this.arrayBuffer = undefined; // デコード後は不要なためメモリ解放
+        return this.audioBuffer = buffer;
     }
 
     public wasDecoded(): boolean {
